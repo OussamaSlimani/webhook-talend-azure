@@ -1,6 +1,6 @@
 Flask
 gunicorn
-jsonpatch=
+jsonpatch
 jsonpointer
 jsonschema
 requests
