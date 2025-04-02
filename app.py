@@ -5,26 +5,21 @@ import base64
 import os
 import firebase_admin
 from firebase_admin import credentials, db
-from dotenv import load_dotenv 
+from dotenv import load_dotenv
 from flask import Flask
 from threading import Thread, Event
-import logging
 
-# Set up logging configuration
-logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
-
-# Load environment variables from .env file
+# Load environment variables
 load_dotenv()
 
 # Firebase Configuration
 FIREBASE_URL = os.getenv("FIREBASE_URL")
 
-# Construct Firebase credentials from environment variables
 firebase_creds = {
     "type": os.getenv("FIREBASE_TYPE"),
     "project_id": os.getenv("FIREBASE_PROJECT_ID"),
     "private_key_id": os.getenv("FIREBASE_PRIVATE_KEY_ID"),
-    "private_key": os.getenv("FIREBASE_PRIVATE_KEY").replace("\\n", "\n"),  # Handle newlines
+    "private_key": os.getenv("FIREBASE_PRIVATE_KEY").replace("\\n", "\n"),
     "client_email": os.getenv("FIREBASE_CLIENT_EMAIL"),
     "client_id": os.getenv("FIREBASE_CLIENT_ID"),
     "auth_uri": os.getenv("FIREBASE_AUTH_URI"),
@@ -38,16 +33,10 @@ firebase_creds = {
 if not firebase_admin._apps:
     cred = credentials.Certificate(firebase_creds)
     firebase_admin.initialize_app(cred, {"databaseURL": FIREBASE_URL})
-    logging.info("Firebase initialized.")
 
-# Talend API
+# API and Pipeline Configuration
 API_URL = os.getenv("API_URL")
 API_KEY = os.getenv("API_KEY")
-
-# Azure DevOps API
-AZURE_ORG = os.getenv("AZURE_ORG")
-AZURE_PROJECT = os.getenv("AZURE_PROJECT")
-AZURE_PIPELINE_ID = os.getenv("AZURE_PIPELINE_ID")
 AZURE_API_URL = os.getenv("AZURE_API_URL")
 AZURE_PAT = os.getenv("AZURE_PAT")
 
@@ -57,128 +46,106 @@ app = Flask(__name__)
 # Stop event for monitoring thread
 stop_event = Event()
 
-# Function to trigger the Azure DevOps pipeline
 def trigger_azure_pipeline():
-    logging.info("Triggering Azure DevOps pipeline...")
+    """Triggers the Azure DevOps pipeline."""
     headers = {
         "Content-Type": "application/json",
         "Authorization": f"Basic {base64.b64encode((':' + AZURE_PAT).encode()).decode()}",
     }
     payload = json.dumps({
         "stagesToSkip": [],
-        "resources": {
-            "repositories": {
-                "self": {
-                    "refName": "refs/heads/main"
-                }
-            }
-        }
+        "resources": {"repositories": {"self": {"refName": "refs/heads/main"}}}
     })
 
     try:
         response = requests.post(AZURE_API_URL, headers=headers, data=payload)
         response.raise_for_status()
-        logging.info("✅ Pipeline Azure DevOps triggered successfully!")
+        print("✅ Azure DevOps pipeline triggered successfully!")
     except requests.exceptions.RequestException as e:
-        logging.error(f"❌ Error triggering pipeline: {e}")
+        print(f"❌ Error triggering pipeline: {e}")
 
-# Function to fetch artifacts from Talend API
 def fetch_artifacts():
-    headers = {
-        'Authorization': f'Bearer {API_KEY}',
-        'Content-Type': 'application/json',
-    }
+    """Fetches the latest artifacts from the Talend API."""
+    headers = {"Authorization": f"Bearer {API_KEY}", "Content-Type": "application/json"}
 
     try:
-        logging.info("Fetching artifacts from Talend API...")
         response = requests.get(API_URL, headers=headers)
         response.raise_for_status()
-        data = response.json()
-        return data.get('items', []) 
+        return response.json().get('items', [])
     except requests.exceptions.RequestException as e:
-        logging.error(f"Error fetching artifacts: {e}")
+        print(f"Error fetching artifacts: {e}")
         return None
 
-# Function to load previous artifacts from Firebase
 def load_previous_artifacts():
+    """Loads previously stored artifacts from Firebase."""
     try:
-        ref = db.reference("/previous_artifacts")
-        previous_artifacts = ref.get()
-        return previous_artifacts if previous_artifacts else {}
+        return db.reference("/previous_artifacts").get() or {}
     except Exception as e:
-        logging.error(f"Error fetching previous artifacts from Firebase: {e}")
+        print(f"Error loading previous artifacts: {e}")
         return {}
 
-# Function to save the current artifacts to Firebase
-def save_current_artifacts(current_artifacts):
+def save_current_artifacts(artifact_id, artifact_data):
+    """Updates Firebase with new artifact data."""
     try:
-        ref = db.reference("/previous_artifacts")
-        ref.set(current_artifacts)
-        logging.info("✅ Artifacts saved to Firebase successfully!")
+        db.reference(f"/previous_artifacts/{artifact_id}").set(artifact_data)
+        print(f"✅ Updated Firebase for artifact {artifact_id}")
     except Exception as e:
-        logging.error(f"❌ Error saving artifacts to Firebase: {e}")
+        print(f"❌ Error saving artifact {artifact_id}: {e}")
 
-# Function to monitor artifacts and detect new versions
 def monitor_artifacts():
+    """Continuously monitors artifacts and triggers the pipeline when new versions are detected."""
     previous_artifacts = load_previous_artifacts()
-    first_run = len(previous_artifacts) == 0  # Check if first execution
-    logging.info("Starting artifact monitoring loop...")
 
-    while not stop_event.is_set():  # Monitor until stop_event is set
-        current_artifacts = fetch_artifacts()
-        
-        if current_artifacts is not None:
-            current_artifacts_data = {artifact['id']: artifact for artifact in current_artifacts}
-            trigger_pipeline_flag = False
-            firebase_update_flag = False
+    while not stop_event.is_set():
+        try:
+            current_artifacts = fetch_artifacts()
+            if current_artifacts is None:
+                continue
 
-            for artifact_id, artifact in current_artifacts_data.items():
+            for artifact in current_artifacts:
+                artifact_id = artifact['id']
                 artifact_name = artifact['name']
                 artifact_versions = set(artifact['versions'])
 
-                # Check if the artifact is new
                 if artifact_id not in previous_artifacts:
-                    logging.info(f"🆕 New artifact published: {artifact_name} (ID: {artifact_id})")
-                    trigger_pipeline_flag = True
-                    firebase_update_flag = True
+                    print(f"🆕 New artifact detected: {artifact_name} (ID: {artifact_id})")
+                    trigger_azure_pipeline()
+                    save_current_artifacts(artifact_id, {"name": artifact_name, "versions": list(artifact_versions)})
+
                 else:
-                    # Check if the artifact has new versions
-                    previous_versions = set(previous_artifacts[artifact_id]['versions'])
+                    previous_versions = set(previous_artifacts[artifact_id].get("versions", []))
                     new_versions = artifact_versions - previous_versions
 
                     if new_versions:
-                        logging.info(f"🚀 New versions for {artifact_name} (ID: {artifact_id}): {', '.join(new_versions)}")
-                        trigger_pipeline_flag = True
-                        firebase_update_flag = True
+                        print(f"🚀 New versions for {artifact_name}: {', '.join(new_versions)}")
+                        trigger_azure_pipeline()
+                        save_current_artifacts(artifact_id, {"name": artifact_name, "versions": list(artifact_versions)})
 
-                # Update previous artifacts dictionary only if there's a change
-                if firebase_update_flag:
-                    previous_artifacts[artifact_id] = {
-                        'name': artifact_name,
-                        'versions': list(artifact_versions)
-                    }
+            time.sleep(30)
 
-            # Trigger pipeline if a new artifact or version is found (except on first run)
-            if trigger_pipeline_flag and not first_run:
-                trigger_azure_pipeline()
+        except Exception as e:
+            print(f"❌ Error in monitoring loop: {e}")
 
-            # Save current artifacts to Firebase only if there is a change
-            if firebase_update_flag:
-                save_current_artifacts(previous_artifacts)
+# Flask routes
+@app.route('/start')
+def start_monitoring():
+    """Starts the artifact monitoring in the background."""
+    if not stop_event.is_set():
+        print("🚀 Starting artifact monitoring...")
+        thread = Thread(target=monitor_artifacts, daemon=True)
+        thread.start()
+        return "Artifact monitoring started!"
 
-        # Wait before next check
-        time.sleep(30)
-
-# Start the artifact monitoring on server startup
-def start_monitoring_in_background():
-    logging.info("Starting artifact monitoring in background...")
-    thread = Thread(target=monitor_artifacts)
-    thread.daemon = True  # Daemon thread will exit when the main program exits
-    thread.start()
+@app.route('/stop')
+def stop_monitoring():
+    """Stops the artifact monitoring."""
+    stop_event.set()
+    return "Artifact monitoring has been stopped!"
 
 if __name__ == "__main__":
-    # Start the monitoring automatically when the app starts
-    start_monitoring_in_background()
+    # Auto-start monitoring when the app runs
+    print("🔄 Auto-starting artifact monitoring...")
+    monitoring_thread = Thread(target=monitor_artifacts, daemon=True)
+    monitoring_thread.start()
 
-    logging.info("Flask app is starting...")
     app.run(debug=True, use_reloader=False)
