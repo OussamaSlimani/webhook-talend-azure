@@ -169,22 +169,16 @@ def monitor_artifacts():
         # Wait before next check
         time.sleep(30)
 
-# Flask route to start the artifact monitoring
-@app.route('/start')
-def start_monitoring():
+# Start the artifact monitoring on server startup
+def start_monitoring_in_background():
     logging.info("Starting artifact monitoring in background...")
     thread = Thread(target=monitor_artifacts)
     thread.daemon = True  # Daemon thread will exit when the main program exits
     thread.start()
-    return "Artifact monitoring started in the background!"
-
-# Flask route to stop the artifact monitoring
-@app.route('/stop')
-def stop_monitoring():
-    stop_event.set()  # Signal the monitoring thread to stop
-    logging.info("Artifact monitoring has been stopped!")
-    return "Artifact monitoring has been stopped!"
 
 if __name__ == "__main__":
+    # Start the monitoring automatically when the app starts
+    start_monitoring_in_background()
+
     logging.info("Flask app is starting...")
     app.run(debug=True, use_reloader=False)
