@@ -7,7 +7,7 @@ import firebase_admin
 from firebase_admin import credentials, db
 from dotenv import load_dotenv 
 from flask import Flask
-from threading import Thread
+from threading import Thread, Event
 
 # Load environment variables from .env file
 load_dotenv()
@@ -35,7 +35,6 @@ if not firebase_admin._apps:
     cred = credentials.Certificate(firebase_creds)
     firebase_admin.initialize_app(cred, {"databaseURL": FIREBASE_URL})
 
-
 # Talend API
 API_URL = os.getenv("API_URL")
 API_KEY = os.getenv("API_KEY")
@@ -49,6 +48,9 @@ AZURE_PAT = os.getenv("AZURE_PAT")
 
 # Initialize Flask app
 app = Flask(__name__)
+
+# Stop event for monitoring thread
+stop_event = Event()
 
 # Function to trigger the Azure DevOps pipeline
 def trigger_azure_pipeline():
@@ -114,7 +116,7 @@ def monitor_artifacts():
     previous_artifacts = load_previous_artifacts()
     first_run = len(previous_artifacts) == 0  # Check if first execution
 
-    while True:
+    while not stop_event.is_set():  # Monitor until stop_event is set
         current_artifacts = fetch_artifacts()
         
         if current_artifacts is not None:
@@ -160,15 +162,19 @@ def monitor_artifacts():
         time.sleep(30)
 
 # Flask route to start the artifact monitoring
-@app.route('/')
+@app.route('/start')
 def start_monitoring():
     print("🚀 Starting artifact monitoring in background...")
     thread = Thread(target=monitor_artifacts)
-    thread.daemon = True  
+    thread.daemon = True  # Daemon thread will exit when the main program exits
     thread.start()
     return "Artifact monitoring started in the background!"
 
+# Flask route to stop the artifact monitoring
+@app.route('/stop')
+def stop_monitoring():
+    stop_event.set()  # Signal the monitoring thread to stop
+    return "Artifact monitoring has been stopped!"
+
 if __name__ == "__main__":
-    app.run(debug=True, use_reloader=False)  
-
-
+    app.run(debug=True, use_reloader=False)
