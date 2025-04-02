@@ -58,13 +58,12 @@ def trigger_azure_pipeline():
     """Triggers the Azure DevOps pipeline."""
     headers = {
         "Content-Type": "application/json",
-        "Authorization": f"Basic {base64.b64encode((':' + AZURE_PAT).encode()).decode()}",
+        "Authorization": f"Basic {base64.b64encode((':' + AZURE_PAT).encode()).decode()}"
     }
     payload = json.dumps({
         "stagesToSkip": [],
         "resources": {"repositories": {"self": {"refName": "refs/heads/main"}}}
     })
-
     try:
         response = requests.post(AZURE_API_URL, headers=headers, data=payload)
         response.raise_for_status()
@@ -75,7 +74,6 @@ def trigger_azure_pipeline():
 def fetch_artifacts():
     """Fetches the latest artifacts from the Talend API."""
     headers = {"Authorization": f"Bearer {API_KEY}", "Content-Type": "application/json"}
-
     try:
         response = requests.get(API_URL, headers=headers)
         response.raise_for_status()
@@ -103,7 +101,8 @@ def save_current_artifacts(artifact_id, artifact_data):
 def monitor_artifacts():
     """Continuously monitors artifacts and triggers the pipeline when new versions are detected."""
     previous_artifacts = load_previous_artifacts()
-
+    local_cache = {k: set(v["versions"]) for k, v in previous_artifacts.items()}  # Local cache
+    
     while not stop_event.is_set():
         try:
             current_artifacts = fetch_artifacts()
@@ -114,23 +113,24 @@ def monitor_artifacts():
                 artifact_id = artifact['id']
                 artifact_name = artifact['name']
                 artifact_versions = set(artifact['versions'])
-
-                if artifact_id not in previous_artifacts:
+                
+                if artifact_id not in local_cache:
                     logger.info(f"🆕 New artifact detected: {artifact_name} (ID: {artifact_id})")
                     trigger_azure_pipeline()
                     save_current_artifacts(artifact_id, {"name": artifact_name, "versions": list(artifact_versions)})
-
+                    local_cache[artifact_id] = artifact_versions
                 else:
-                    previous_versions = set(previous_artifacts[artifact_id].get("versions", []))
+                    previous_versions = local_cache[artifact_id]
                     new_versions = artifact_versions - previous_versions
 
                     if new_versions:
-                        logger.info(f"🚀 New versions for {artifact_name}: {', '.join(new_versions)}")
+                        new_versions_list = list(new_versions)
+                        logger.info(f"🚀 New versions for {artifact_name}: {', '.join(new_versions_list)}")
                         trigger_azure_pipeline()
                         save_current_artifacts(artifact_id, {"name": artifact_name, "versions": list(artifact_versions)})
+                        local_cache[artifact_id] = artifact_versions
 
             time.sleep(30)
-
         except Exception as e:
             logger.error(f"❌ Error in monitoring loop: {e}")
 
@@ -155,5 +155,4 @@ if __name__ == "__main__":
     logger.info("🔄 Auto-starting artifact monitoring...")
     monitoring_thread = Thread(target=monitor_artifacts, daemon=True)
     monitoring_thread.start()
-
     app.run(debug=True, use_reloader=False)
