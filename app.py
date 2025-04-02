@@ -5,6 +5,8 @@ import base64
 import os
 import firebase_admin
 import logging
+import threading
+from flask import Flask
 from firebase_admin import credentials, db
 from dotenv import load_dotenv
 
@@ -45,6 +47,12 @@ API_URL = os.getenv("API_URL")
 API_KEY = os.getenv("API_KEY")
 AZURE_API_URL = os.getenv("AZURE_API_URL")
 AZURE_PAT = os.getenv("AZURE_PAT")
+
+app = Flask(__name__)
+
+# Global flag to control the thread
+monitoring_thread = None
+monitoring_active = False
 
 def trigger_azure_pipeline():
     """Triggers the Azure DevOps pipeline."""
@@ -123,12 +131,40 @@ def monitor_artifacts():
         if no_new_versions:
             logger.info("🙈 There is no update")
 
-
     except Exception as e:
         logger.error(f"❌ Error in monitoring loop: {e}")
 
-if __name__ == "__main__":
-    logger.info("🔄 Starting artifact monitoring...")
-    while True:
-        monitor_artifacts()  
+def start_monitoring():
+    """Starts the artifact monitoring in a new thread."""
+    global monitoring_thread, monitoring_active
+    if not monitoring_active:
+        monitoring_active = True
+        monitoring_thread = threading.Thread(target=run_monitoring)
+        monitoring_thread.start()
+        logger.info("🔄 Monitoring started!")
+
+def stop_monitoring():
+    """Stops the artifact monitoring."""
+    global monitoring_active
+    if monitoring_active:
+        monitoring_active = False
+        logger.info("🛑 Monitoring stopped!")
+
+def run_monitoring():
+    """Runs the monitoring process in a loop."""
+    while monitoring_active:
+        monitor_artifacts()
         time.sleep(30)
+
+@app.route('/start', methods=['GET'])
+def start():
+    start_monitoring()
+    return "Monitoring started!", 200
+
+@app.route('/stop', methods=['GET'])
+def stop():
+    stop_monitoring()
+    return "Monitoring stopped!", 200
+
+if __name__ == '__main__':
+    app.run(debug=True)
