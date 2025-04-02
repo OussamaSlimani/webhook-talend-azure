@@ -7,4 +7,3 @@ requests
 parsedatetime
 firebase-admin
 python-dotenv
-threading
