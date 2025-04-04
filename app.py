@@ -42,9 +42,11 @@ if not firebase_admin._apps:
     cred = credentials.Certificate(firebase_creds)
     firebase_admin.initialize_app(cred, {"databaseURL": FIREBASE_URL})
 
-# API and Pipeline Configuration
+# Talend
 TALEND_API_URL = os.getenv("TALEND_API_URL")
 TALEND_API_KEY = os.getenv("TALEND_API_KEY")
+
+# Azure DevOps
 AZURE_ORG = os.getenv("AZURE_ORG")
 AZURE_PROJECT = os.getenv("AZURE_PROJECT")
 AZURE_PIPELINE_ID = os.getenv("AZURE_PIPELINE_ID")
@@ -65,10 +67,7 @@ def trigger_azure_pipeline():
         "Content-Type": "application/json",
         "Authorization": f"Basic {base64.b64encode((':' + AZURE_PAT).encode()).decode()}",
     }
-    payload = json.dumps({
-        "stagesToSkip": [],
-        "resources": {"repositories": {"self": {"refName": "refs/heads/main"}}}
-    })
+    payload = json.dumps({})
 
     try:
         response = requests.post(AZURE_API_URL, headers=headers, data=payload)
@@ -89,16 +88,19 @@ def fetch_artifacts():
         logger.error(f"❌ Error fetching artifacts: {e}")
         return None
 
-def load_previous_artifacts():
-    """Loads previously stored artifacts from Firebase."""
+def read_from_firebase(database):
+    """Reads the stored data from a specific Firebase database reference."""
     try:
-        return db.reference("/previous_artifacts").get() or {}
+        # Fetch data from Firebase, returning an empty dict if None is returned
+        previous_artifacts = db.reference(f"/{database}").get() or {}
+        return previous_artifacts
     except Exception as e:
-        logger.error(f"❌ Error loading previous artifacts: {e}")
+        logger.error(f"❌ Error reading from Firebase: {e}")
         return {}
 
-def save_current_artifacts(artifact_id, artifact_data):
-    """Updates Firebase with new artifact data."""
+
+def save_to_firebase(artifact_id, artifact_data):
+    """Saves the current artifacts to Firebase."""
     try:
         db.reference(f"/previous_artifacts/{artifact_id}").set(artifact_data)
         logger.info(f"✅ Updated Firebase for artifact {artifact_id}")
@@ -106,22 +108,33 @@ def save_current_artifacts(artifact_id, artifact_data):
         logger.error(f"❌ Error saving artifact {artifact_id}: {e}")
 
 def monitor_artifacts():
-    """Continuously monitors artifacts and triggers the pipeline when new versions are detected."""
+    """Monitors the artifacts and triggers the pipeline if there are new versions."""
     try:
-        previous_artifacts = load_previous_artifacts()
+        previous_artifacts = read_from_firebase("previous_artifacts")
         current_artifacts = fetch_artifacts()
 
         no_new_versions = True
+
+        engines = read_from_firebase("engines")
+        workspace_set = {data['DynamicEngineWorkspace']['name'] for env, data in engines.items() if 'DynamicEngineWorkspace' in data}
+        env_name_set = {data['DynamicEngineEnv']['name'] for env, data in engines.items() if 'DynamicEngineEnv' in data}
+
 
         for artifact in current_artifacts:
             artifact_id = artifact['id']
             artifact_name = artifact['name']
             artifact_versions = set(artifact['versions'])
+            workspace_name = artifact['workspace']['name']
+            environment_name = artifact['workspace']['environment']['name']
+
+            if(workspace_name not in workspace_set or environment_name not in env_name_set):
+                logger.info(f"↪️ Ignoring artifact {artifact_name} (ID: {artifact_id}) due to workspace/environment mismatch.")
+                continue
 
             if artifact_id not in previous_artifacts:
                 logger.info(f"🆕 New artifact detected: {artifact_name} (ID: {artifact_id})")
                 trigger_azure_pipeline()
-                save_current_artifacts(artifact_id, {"name": artifact_name, "versions": list(artifact_versions)})
+                save_to_firebase(artifact_id, {"name": artifact_name, "versions": list(artifact_versions)})
                 no_new_versions = False
             else:
                 previous_versions = set(previous_artifacts[artifact_id].get("versions", []))
@@ -130,7 +143,7 @@ def monitor_artifacts():
                 if new_versions:
                     logger.info(f"🚀 New versions for {artifact_name}: {', '.join(new_versions)}")
                     trigger_azure_pipeline()
-                    save_current_artifacts(artifact_id, {"name": artifact_name, "versions": list(artifact_versions)})
+                    save_to_firebase(artifact_id, {"name": artifact_name, "versions": list(artifact_versions)})
                     no_new_versions = False
 
         if no_new_versions:
