@@ -43,10 +43,15 @@ if not firebase_admin._apps:
     firebase_admin.initialize_app(cred, {"databaseURL": FIREBASE_URL})
 
 # API and Pipeline Configuration
-API_URL = os.getenv("API_URL")
-API_KEY = os.getenv("API_KEY")
-AZURE_API_URL = os.getenv("AZURE_API_URL")
+TALEND_API_URL = os.getenv("TALEND_API_URL")
+TALEND_API_KEY = os.getenv("TALEND_API_KEY")
+AZURE_ORG = os.getenv("AZURE_ORG")
+AZURE_PROJECT = os.getenv("AZURE_PROJECT")
+AZURE_PIPELINE_ID = os.getenv("AZURE_PIPELINE_ID")
 AZURE_PAT = os.getenv("AZURE_PAT")
+
+# Construct AZURE API URL
+AZURE_API_URL = f"https://dev.azure.com/{AZURE_ORG}/{AZURE_PROJECT}/_apis/pipelines/{AZURE_PIPELINE_ID}/runs?api-version=7.1-preview.1"
 
 app = Flask(__name__)
 
@@ -74,10 +79,10 @@ def trigger_azure_pipeline():
 
 def fetch_artifacts():
     """Fetches the latest artifacts from the Talend API."""
-    headers = {"Authorization": f"Bearer {API_KEY}", "Content-Type": "application/json"}
+    headers = {"Authorization": f"Bearer {TALEND_API_KEY}", "Content-Type": "application/json"}
 
     try:
-        response = requests.get(API_URL, headers=headers)
+        response = requests.get(TALEND_API_URL, headers=headers)
         response.raise_for_status()
         return response.json().get('items', [])
     except requests.exceptions.RequestException as e:
